@@ -94,7 +94,8 @@ var (
 	ipv6ReverseRE    = regexp.MustCompile(`^(([[:xdigit:]]\.){32})ip6\.arpa\.`)
 	dns01ChallengeRE = regexp.MustCompile(`(?i)_acme-challenge\.`) // (?i) → non-capturing case insensitive
 
-	mbox, _       = dnsmessage.NewName("briancunnie.gmail.com.")
+	// SOA MBOX is the DNS representation of station@defang.io.
+	mbox, _       = dnsmessage.NewName("station.defang.io.")
 	mx1, _        = dnsmessage.NewName("mail.protonmail.ch.")
 	mx2, _        = dnsmessage.NewName("mailsec.protonmail.ch.")
 	dkim1Sslip, _ = dnsmessage.NewName("protonmail.domainkey.dw4gykv5i2brtkjglrf34wf6kbxpa5hgtmg2xqopinhgxn5axo73a.domains.proton.ch.")
