@@ -161,6 +161,17 @@ var _ = Describe("flags", func() {
 				Eventually(digSession, 1).Should(Exit(0))
 				Eventually(string(serverSession.Err.Contents())).Should(MatchRegexp(`Adding record "alias\.b\.c\.=CNAME:target\.example\.com"\n`))
 			})
+			It("returns the CNAME for A and AAAA queries so resolvers can follow it", func() {
+				for _, recordType := range []string{"A", "AAAA"} {
+					digArgs := "@localhost alias.b.c " + recordType + " -p " + strconv.Itoa(port)
+					digCmd := exec.Command("dig", strings.Split(digArgs, " ")...)
+					digSession, err := Start(digCmd, GinkgoWriter, GinkgoWriter)
+					Expect(err).ToNot(HaveOccurred())
+					Eventually(digSession).Should(Say(`;; ANSWER SECTION:`))
+					Eventually(digSession).Should(Say(`target\.example\.com\.\n`))
+					Eventually(digSession, 1).Should(Exit(0))
+				}
+			})
 			When("the target is not a valid DNS name (over 255 bytes)", func() {
 				BeforeEach(func() {
 					flags = []string{"-addresses=alias.b.c=CNAME:" + strings.Repeat("a", 300)}

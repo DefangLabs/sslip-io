@@ -527,6 +527,21 @@ func (x *Xip) QueryResponse(queryBytes []byte, srcAddr net.IP) (responseBytes []
 	return responseBytes, logMessage, nil
 }
 
+func (x *Xip) customCNAMEResponse(q dnsmessage.Question, response Response, logMessage string, cname *dnsmessage.CNAMEResource) (Response, string, error) {
+	x.Metrics.AnsweredQueries++
+	response.Answers = append(response.Answers,
+		func(b *dnsmessage.Builder) error {
+			return b.CNAMEResource(dnsmessage.ResourceHeader{
+				Name:   q.Name,
+				Type:   dnsmessage.TypeCNAME,
+				Class:  dnsmessage.ClassINET,
+				TTL:    604800, // 60 * 60 * 24 * 7 == 1 week; long TTL, these IP addrs don't change
+				Length: 0,
+			}, *cname)
+		})
+	return response, logMessage + cname.CNAME.String(), nil
+}
+
 func (x *Xip) processQuestion(q dnsmessage.Question, srcAddr net.IP) (response Response, logMessage string, err error) {
 	logMessage = q.Type.String() + " " + q.Name.String() + " ? "
 	response = Response{
@@ -559,10 +574,18 @@ func (x *Xip) processQuestion(q dnsmessage.Question, srcAddr net.IP) (response R
 	switch q.Type {
 	case dnsmessage.TypeA:
 		{
+			// A and AAAA queries for a custom CNAME must return the CNAME so a
+			// recursive resolver can follow it to the target's address record.
+			if cname := CNAMEResource(q.Name.String()); cname != nil {
+				return x.customCNAMEResponse(q, response, logMessage, cname)
+			}
 			return x.nameToAwithBlocklist(q, response, logMessage)
 		}
 	case dnsmessage.TypeAAAA:
 		{
+			if cname := CNAMEResource(q.Name.String()); cname != nil {
+				return x.customCNAMEResponse(q, response, logMessage, cname)
+			}
 			return x.nameToAAAAwithBlocklist(q, response, logMessage)
 		}
 	case dnsmessage.TypeALL:
@@ -589,23 +612,7 @@ func (x *Xip) processQuestion(q dnsmessage.Question, srcAddr net.IP) (response R
 					})
 				return response, logMessage + "nil, SOA " + soaLogMessage(soaResource), nil
 			}
-			x.Metrics.AnsweredQueries++
-			response.Answers = append(response.Answers,
-				// 1 CNAME record, via Customizations
-				func(b *dnsmessage.Builder) error {
-					err = b.CNAMEResource(dnsmessage.ResourceHeader{
-						Name:   q.Name,
-						Type:   dnsmessage.TypeCNAME,
-						Class:  dnsmessage.ClassINET,
-						TTL:    604800, // 60 * 60 * 24 * 7 == 1 week; long TTL, these IP addrs don't change
-						Length: 0,
-					}, *cname)
-					if err != nil {
-						return err
-					}
-					return nil
-				})
-			return response, logMessage + cname.CNAME.String(), nil
+			return x.customCNAMEResponse(q, response, logMessage, cname)
 		}
 	case dnsmessage.TypeMX:
 		{
