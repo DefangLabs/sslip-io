@@ -535,7 +535,7 @@ func (x *Xip) customCNAMEResponse(q dnsmessage.Question, response Response, logM
 				Name:   q.Name,
 				Type:   dnsmessage.TypeCNAME,
 				Class:  dnsmessage.ClassINET,
-				TTL:    604800, // 60 * 60 * 24 * 7 == 1 week; long TTL, these IP addrs don't change
+				TTL:    3600, // 60 * 60 == 1 hour; custom CNAME targets can change
 				Length: 0,
 			}, *cname)
 		})
