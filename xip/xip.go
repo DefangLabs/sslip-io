@@ -24,6 +24,11 @@ import (
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
 
+// blocklistHTTPClient bounds how long a single blocklist fetch attempt may
+// take. The default http.Client has no timeout at all, so a slow or stalled
+// connection to a third-party server would otherwise block indefinitely.
+var blocklistHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 // Xip is meant to be a singleton that holds global state for the DNS server
 type Xip struct {
 	DnsAmplificationAttackDelay chan struct{}           // for throttling metrics.status.sslip.io
@@ -230,13 +235,21 @@ type Response struct {
 func NewXip(blocklistURL string, nameservers []string, addresses []string, delegates []string, ptrDomain string) (x *Xip, logmessages []string) {
 	x = &Xip{Metrics: Metrics{Start: time.Now()}}
 
-	// Download the blocklist
-	logmessages = append(logmessages, x.downloadBlockList(blocklistURL))
-	// re-download the blocklist every hour so I don't need to restart servers after updating blocklist
+	// Download the blocklist in the background, then re-download it every
+	// hour so I don't need to restart servers after updating blocklist.
+	// This must never block server startup: a deployment's health check can
+	// have a much shorter window than a remote blocklist fetch needs, and a
+	// DNS server that can't answer queries until a third party's web server
+	// replies is a server with an availability dependency on that third
+	// party (see DefangLabs/station's apps/dns production incident,
+	// 2026-10-22: an Azure VMSS rolling upgrade aborted because this fetch
+	// didn't return within the LB health probe's window).
 	go func() {
 		for {
+			if logmessage := x.downloadBlockList(blocklistURL); logmessage != "" {
+				log.Print(logmessage)
+			}
 			time.Sleep(1 * time.Hour)
-			_ = x.downloadBlockList(blocklistURL) // uh-oh, I lose the log message.
 		}
 	}()
 
@@ -1245,7 +1258,7 @@ func (x *Xip) downloadBlockList(blocklistURL string) string {
 		//noinspection GoUnhandledErrorResult
 		defer blocklistReader.Close()
 	} else {
-		resp, err := http.Get(blocklistURL)
+		resp, err := blocklistHTTPClient.Get(blocklistURL)
 		if err != nil {
 			return fmt.Sprintf(`failed to download blocklist "%s": %s`, blocklistURL, err.Error())
 		}
