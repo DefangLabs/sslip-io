@@ -29,6 +29,10 @@ import (
 // connection to a third-party server would otherwise block indefinitely.
 var blocklistHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
+// blocklistRetryInterval is how soon a failed blocklist download is retried,
+// rather than waiting for the next scheduled hourly refresh.
+var blocklistRetryInterval = 10 * time.Second
+
 // Xip is meant to be a singleton that holds global state for the DNS server
 type Xip struct {
 	DnsAmplificationAttackDelay chan struct{}           // for throttling metrics.status.sslip.io
@@ -244,12 +248,22 @@ func NewXip(blocklistURL string, nameservers []string, addresses []string, deleg
 	// party (see DefangLabs/station's apps/dns production incident,
 	// 2026-10-22: an Azure VMSS rolling upgrade aborted because this fetch
 	// didn't return within the LB health probe's window).
+	//
+	// A failed attempt retries after blocklistRetryInterval instead of
+	// waiting the full hour: the server is already answering queries while
+	// unprotected, so a transient failure (DNS not yet resolvable, a slow
+	// network at boot) shouldn't leave it that way for up to an hour.
 	go func() {
 		for {
-			if logmessage := x.downloadBlockList(blocklistURL); logmessage != "" {
+			logmessage, ok := x.downloadBlockList(blocklistURL)
+			if logmessage != "" {
 				log.Print(logmessage)
 			}
-			time.Sleep(1 * time.Hour)
+			if ok {
+				time.Sleep(1 * time.Hour)
+			} else {
+				time.Sleep(blocklistRetryInterval)
+			}
 		}
 	}()
 
@@ -1243,7 +1257,9 @@ func (a Metrics) MostlyEquals(b Metrics) bool {
 	return false
 }
 
-func (x *Xip) downloadBlockList(blocklistURL string) string {
+// downloadBlockList fetches and parses the blocklist, returning a log
+// message and whether the attempt succeeded.
+func (x *Xip) downloadBlockList(blocklistURL string) (message string, ok bool) {
 	var err error
 	var blocklistReader io.ReadCloser
 	// file protocol's purpose: so I can run tests while flying with no internet
@@ -1253,31 +1269,31 @@ func (x *Xip) downloadBlockList(blocklistURL string) string {
 		blocklistPath := strings.TrimPrefix(blocklistURL, "file://")
 		blocklistReader, err = os.Open(blocklistPath)
 		if err != nil {
-			return fmt.Sprintf(`failed to open blocklist "%s": %s`, blocklistPath, err.Error())
+			return fmt.Sprintf(`failed to open blocklist "%s": %s`, blocklistPath, err.Error()), false
 		}
 		//noinspection GoUnhandledErrorResult
 		defer blocklistReader.Close()
 	} else {
 		resp, err := blocklistHTTPClient.Get(blocklistURL)
 		if err != nil {
-			return fmt.Sprintf(`failed to download blocklist "%s": %s`, blocklistURL, err.Error())
+			return fmt.Sprintf(`failed to download blocklist "%s": %s`, blocklistURL, err.Error()), false
 		}
 		blocklistReader = resp.Body
 		//noinspection GoUnhandledErrorResult
 		defer blocklistReader.Close()
 		if resp.StatusCode > 299 {
-			return fmt.Sprintf(`failed to download blocklist "%s", HTTP status: "%d"`, blocklistURL, resp.StatusCode)
+			return fmt.Sprintf(`failed to download blocklist "%s", HTTP status: "%d"`, blocklistURL, resp.StatusCode), false
 		}
 	}
 	blocklistCIDRs, blocklistIPs, blocklistStrings, err := ReadBlocklist(blocklistReader)
 	if err != nil {
-		return fmt.Sprintf(`failed to parse blocklist "%s": %s`, blocklistURL, err.Error())
+		return fmt.Sprintf(`failed to parse blocklist "%s": %s`, blocklistURL, err.Error()), false
 	}
 	x.BlocklistCIDRs = blocklistCIDRs
 	x.BlocklistIPs = blocklistIPs
 	x.BlocklistStrings = blocklistStrings
 	x.BlocklistUpdated = time.Now()
-	return fmt.Sprintf("Successfully downloaded blocklist from %s: %v, %v, %v", blocklistURL, x.BlocklistCIDRs, x.BlocklistIPs, x.BlocklistStrings)
+	return fmt.Sprintf("Successfully downloaded blocklist from %s: %v, %v, %v", blocklistURL, x.BlocklistCIDRs, x.BlocklistIPs, x.BlocklistStrings), true
 }
 
 // ReadBlocklist "sanitizes" the block list, removing comments, invalid characters
